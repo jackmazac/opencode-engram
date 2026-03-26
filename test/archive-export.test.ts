@@ -1,0 +1,99 @@
+import { describe, expect, test } from "bun:test"
+import { mkdirSync, readFileSync, unlinkSync } from "node:fs"
+import path from "node:path"
+import os from "node:os"
+import { Database } from "bun:sqlite"
+import { exportRootSession } from "../src/archive.ts"
+import { defaultEngramConfig, expandArchivePath } from "../src/config.ts"
+import { applyConnPragmas, openMemoryDb } from "../src/db.ts"
+
+describe("archive export", () => {
+  test("writes gzip and idempotent hash skip", async () => {
+    const dir = path.join(os.tmpdir(), `engram-arch-${Date.now()}`)
+    mkdirSync(dir, { recursive: true })
+    const hotPath = path.join(dir, "hot.db")
+    const memPath = path.join(dir, "mem.db")
+
+    const hot = new Database(hotPath, { create: true })
+    applyConnPragmas(hot)
+    hot.exec(`
+      CREATE TABLE session (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        parent_id TEXT,
+        time_created INTEGER NOT NULL,
+        time_updated INTEGER NOT NULL
+      );
+      CREATE TABLE message (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        time_created INTEGER NOT NULL,
+        data TEXT NOT NULL
+      );
+      CREATE TABLE part (
+        id TEXT PRIMARY KEY,
+        message_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        time_created INTEGER NOT NULL,
+        data TEXT NOT NULL
+      );
+    `)
+    hot
+      .prepare(
+        `INSERT INTO session (id, project_id, parent_id, time_created, time_updated) VALUES (?,?,?,?,?)`,
+      )
+      .run("root1", "proj1", null, 1, 1)
+    hot
+      .prepare(`INSERT INTO message (id, session_id, time_created, data) VALUES (?,?,?,?)`)
+      .run("m1", "root1", 2, JSON.stringify({ role: "user" }))
+    hot
+      .prepare(`INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?,?,?,?,?)`)
+      .run(
+        "p1",
+        "m1",
+        "root1",
+        3,
+        JSON.stringify({ type: "text", text: "hi" }),
+      )
+    hot.close()
+
+    const memoryDb = openMemoryDb(memPath)
+    const cfg = {
+      ...defaultEngramConfig,
+      archive: { ...defaultEngramConfig.archive, exportTimeoutMs: 60_000, path: path.join(dir, "ar") },
+    }
+    const home = dir
+    const archiveRoot = expandArchivePath(home, cfg.archive)
+    mkdirSync(archiveRoot, { recursive: true })
+
+    const r1 = await exportRootSession({
+      memoryDb,
+      hotPath,
+      projectId: "proj1",
+      rootSessionId: "root1",
+      cfg,
+      home,
+      force: false,
+    })
+    expect(r1.skipped).toBe(false)
+    const gz = path.join(archiveRoot, "proj1", "root1.jsonl.gz")
+    const buf = readFileSync(gz)
+    expect(buf.length).toBeGreaterThan(8)
+
+    const r2 = await exportRootSession({
+      memoryDb,
+      hotPath,
+      projectId: "proj1",
+      rootSessionId: "root1",
+      cfg,
+      home,
+      force: false,
+    })
+    expect(r2.skipped).toBe(true)
+
+    memoryDb.close()
+    unlinkSync(hotPath)
+    unlinkSync(memPath)
+    unlinkSync(gz)
+  })
+})
