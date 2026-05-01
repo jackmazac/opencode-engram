@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite"
 import type { EngramConfig } from "./config.ts"
 import { expandArchivePath } from "./config.ts"
 import { exportRootSession, listArchiveRows, staleRootIds, verifyArchiveFile } from "./archive.ts"
+import { pruneLogEvents, trimLogEvents } from "./logger.ts"
 import { pruneMetrics } from "./telemetry.ts"
 
 export type MaintenanceOpts = {
@@ -21,8 +22,14 @@ export type MaintenanceOpts = {
 export async function runMaintenance(opts: MaintenanceOpts): Promise<string> {
   const lines = [`Engram maintenance ${opts.dryRun ? "(dry-run)" : "(apply)"}`]
   if (opts.pruneTelemetry) {
-    lines.push(`telemetry prune: retain ${opts.cfg.telemetry.retainDays}d`)
-    if (!opts.dryRun) pruneMetrics(opts.memoryDb, opts.projectId, opts.cfg.telemetry.retainDays)
+    lines.push(
+      `telemetry prune: metrics retain ${opts.cfg.telemetry.retainDays}d, events retain ${opts.cfg.telemetry.eventRetainDays}d max=${opts.cfg.telemetry.eventMaxRows}`,
+    )
+    if (!opts.dryRun) {
+      pruneMetrics(opts.memoryDb, opts.projectId, opts.cfg.telemetry.retainDays)
+      pruneLogEvents(opts.memoryDb, opts.projectId, opts.cfg.telemetry.eventRetainDays)
+      trimLogEvents(opts.memoryDb, opts.projectId, opts.cfg.telemetry.eventMaxRows)
+    }
   }
 
   if (opts.verifyArchives) {

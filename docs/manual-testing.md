@@ -23,6 +23,7 @@ Expected current baseline for `core`: recall@3 100%, hit@3 100%, MRR 1.
 ```bash
 bun run ./src/cli/run.ts dashboard --project-id engram-eval-core --worktree .
 bun run ./src/cli/run.ts dashboard --json --project-id engram-eval-core --worktree .
+bun run ./src/cli/run.ts telemetry --events --project-id engram-eval-core --worktree .
 bun run ./src/cli/run.ts maintain --project-id engram-eval-core --worktree .
 ```
 
@@ -62,6 +63,7 @@ PROJECT=7bc5e857ac92adfe3c30f26082cb9326e0bcd927
 WT=/Users/jack.mazac/Developer/execintel
 
 bun run ./src/cli/run.ts dashboard --project-id "$PROJECT" --worktree "$WT"
+bun run ./src/cli/run.ts telemetry --events --level warn --project-id "$PROJECT" --worktree "$WT"
 bun run ./src/cli/run.ts context "brief persistence auto update background tasks workspace" --limit 12 --project-id "$PROJECT" --worktree "$WT"
 bun run ./src/cli/run.ts maintain --project-id "$PROJECT" --worktree "$WT"
 ```

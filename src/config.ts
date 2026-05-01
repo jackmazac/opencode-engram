@@ -92,9 +92,10 @@ const memorySearch = z.object({
 const backfillCfg = z.object({
   enabled: z.boolean().default(true),
   lookbackDays: z.number().int().positive().default(90),
-  auto: z.boolean().default(false),
+  auto: z.boolean().default(true),
+  repeat: z.boolean().default(false),
   intervalMs: z.number().int().positive().default(60_000),
-  startupDelayMs: z.number().int().nonnegative().default(30_000),
+  startupDelayMs: z.number().int().nonnegative().default(60_000),
 })
 
 const telemetry = z.object({
@@ -102,6 +103,12 @@ const telemetry = z.object({
   slowMs: z.number().int().positive().default(250),
   detailMaxLength: z.number().int().positive().default(2000),
   retainDays: z.number().int().positive().default(14),
+  eventsEnabled: z.boolean().default(true),
+  eventRetainDays: z.number().int().positive().default(14),
+  eventMaxRows: z.number().int().positive().default(5000),
+  minLevel: z.enum(["debug", "info", "warn", "error", "fatal"]).default("info"),
+  logSlowOperations: z.boolean().default(true),
+  logZeroResultSearches: z.boolean().default(false),
 })
 
 const integration = z.object({
@@ -229,15 +236,22 @@ export const defaultEngramConfig = EngramConfig.parse({
   backfill: {
     enabled: true,
     lookbackDays: 90,
-    auto: false,
+    auto: true,
+    repeat: false,
     intervalMs: 60_000,
-    startupDelayMs: 30_000,
+    startupDelayMs: 60_000,
   },
   telemetry: {
     enabled: true,
     slowMs: 250,
     detailMaxLength: 2000,
     retainDays: 14,
+    eventsEnabled: true,
+    eventRetainDays: 14,
+    eventMaxRows: 5000,
+    minLevel: "info",
+    logSlowOperations: true,
+    logZeroResultSearches: false,
   },
   integration: {
     profile: "standalone",

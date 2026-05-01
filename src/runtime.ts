@@ -15,6 +15,7 @@ import type { ChunkInsert } from "./types.ts"
 import { embedTexts, resolveApiKey } from "./openai.ts"
 import { classifyBatch } from "./classify.ts"
 import { buildContextBundle, formatContextBundle } from "./context.ts"
+import { EngramLogger, formatEventReport, pruneLogEvents, recentLogEvents } from "./logger.ts"
 import { formatHits, searchMemory } from "./retrieve.ts"
 import { ORCHESTRATOR_HINT_BLOCK, appendOrchestratorHint, systemLooksInternal } from "./orchestrator-hint.ts"
 import {
@@ -46,6 +47,7 @@ export class EngramRuntime {
   private pCopyEmbedding!: ReturnType<Database["prepare"]>
   private pUpdateEmbedding!: ReturnType<Database["prepare"]>
   private pUpdateRetrievalRefs!: ReturnType<Database["prepare"]>
+  private logger!: EngramLogger
 
   private writeBuf: ChunkInsert[] = []
   private timers: Array<ReturnType<typeof setInterval> | ReturnType<typeof setTimeout>> = []
@@ -63,6 +65,7 @@ export class EngramRuntime {
     this.db = openMemoryDb(sp)
     this.key = resolveApiKey(cfg.openaiApiKey)
     const d = this.db
+    this.logger = new EngramLogger(d, input.project.id, cfg.telemetry)
     this.pEmbQueue = d.prepare(
       `SELECT id, content, content_hash, content_type, agent FROM chunk
        WHERE time_embedded IS NULL AND project_id = ?
@@ -121,17 +124,33 @@ export class EngramRuntime {
       }, cfg.embed.intervalMs),
     )
     if (cfg.backfill.enabled && cfg.backfill.auto) {
+      this.logger.info("backfill", "delayed_scheduled", {
+        delayMs: cfg.backfill.startupDelayMs,
+        repeat: cfg.backfill.repeat,
+        intervalMs: cfg.backfill.intervalMs,
+      })
       this.timers.push(
         setTimeout(() => {
+          this.logger.info("backfill", "delayed_start")
           this.drainBackfill()
+          if (cfg.backfill.repeat) {
+            this.logger.info("backfill", "repeat_scheduled", {
+              intervalMs: cfg.backfill.intervalMs,
+            })
+            this.timers.push(
+              setInterval(() => {
+                this.drainBackfill()
+              }, cfg.backfill.intervalMs),
+            )
+          }
         }, cfg.backfill.startupDelayMs),
       )
-      this.timers.push(
-        setInterval(() => {
-          this.drainBackfill()
-        }, cfg.backfill.intervalMs),
-      )
     }
+    this.logger.info("startup", "runtime_created", {
+      integrationProfile: cfg.integration.profile,
+      backfillAuto: cfg.backfill.auto,
+      backfillRepeat: cfg.backfill.repeat,
+    })
   }
 
   close() {
@@ -187,9 +206,15 @@ export class EngramRuntime {
 
   drainBackfill() {
     if (!this.cfg.enabled || !this.cfg.backfill.enabled) return
-    if (backfillDone(this.db)) return
+    if (backfillDone(this.db)) {
+      this.logger.info("backfill", "already_done")
+      return
+    }
     const hp = this.cfg.archive.hotDbPath ?? defaultHotDbPath()
-    if (!fs.existsSync(hp)) return
+    if (!fs.existsSync(hp)) {
+      this.logger.warn("backfill", "hot_db_missing", { hotDb: hp })
+      return
+    }
     const start = performance.now()
     const before = memorySnapshot()
     let status: "ok" | "error" = "ok"
@@ -210,6 +235,7 @@ export class EngramRuntime {
     } catch (e) {
       status = "error"
       detail = { ...detail, error: e instanceof Error ? e.message : String(e) }
+      this.logger.error("backfill", "drain_failed", e, { hotDb: hp })
     } finally {
       hot.close()
     }
@@ -226,6 +252,7 @@ export class EngramRuntime {
       done: result.done,
     }
     this.recordMetric("backfill.drain", status, performance.now() - start, rowsCount, null, before, detail)
+    this.logger.info("backfill", "drain_completed", detail)
   }
 
   private enqueue(rows: ChunkInsert[]) {
@@ -408,6 +435,7 @@ export class EngramRuntime {
           embeddedRows: 0,
           error: e instanceof Error ? e.message : String(e),
         }
+        this.logger.error("embedding", "embed_failed", e, { selectedRows: rows.length, cacheHits })
         return
       }
 
@@ -481,9 +509,27 @@ export class EngramRuntime {
     } catch (e) {
       status = "error"
       detail = { ...detail, error: e instanceof Error ? e.message : String(e) }
+      this.logger.error("retrieval", "search_failed", e, {
+        queryLength: query.length,
+        scope: scope ?? "broad",
+      })
       throw e
     } finally {
       this.recordMetric("memory.search", status, performance.now() - start, hitCount, null, before, detail)
+      if (status === "ok" && hitCount === 0 && this.cfg.telemetry.logZeroResultSearches) {
+        this.logger.info("retrieval", "zero_results", {
+          queryLength: query.length,
+          scope: scope ?? "broad",
+        })
+      }
+      const durationMs = performance.now() - start
+      if (status === "ok" && this.cfg.telemetry.logSlowOperations && durationMs >= this.cfg.telemetry.slowMs) {
+        this.logger.warn("retrieval", "slow_search", {
+          durationMs,
+          hitCount,
+          queryLength: query.length,
+        })
+      }
     }
   }
 
@@ -677,7 +723,11 @@ Archives: ${arch.c} | export checkpoints: ${ck.c} | backfill_done: ${bf?.v ?? "0
 
     if (report === "telemetry") {
       pruneMetrics(this.db, pid, this.cfg.telemetry.retainDays)
-      return formatTelemetryReport(recentMetrics(this.db, pid, 200), "last 200")
+      pruneLogEvents(this.db, pid, this.cfg.telemetry.eventRetainDays)
+      return [
+        formatTelemetryReport(recentMetrics(this.db, pid, 200), "last 200"),
+        formatEventReport(recentLogEvents(this.db, pid, { limit: 50, minLevel: "info" }), "last 50"),
+      ].join("\n\n")
     }
 
     return `Report "${report}" not implemented in v1 — use overview | db-health | insights | telemetry.`

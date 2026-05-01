@@ -15,13 +15,15 @@ describe("migrations and FTS", () => {
     const d2 = openMemoryDb(p)
     const v2 = Number((d2.query("PRAGMA user_version;").get() as { user_version: number }).user_version)
     const cols = d2.query(`PRAGMA table_info(chunk)`).all() as { name: string }[]
-    d2.close()
+    const logCols = d2.query(`PRAGMA table_info(log_event)`).all() as { name: string }[]
     expect(v1).toBe(v2)
-    expect(v2).toBe(11)
+    expect(v2).toBe(12)
     expect(cols.map((c) => c.name)).toContain("embedding_model")
     expect(cols.map((c) => c.name)).toContain("embedding_dimensions")
     expect(cols.map((c) => c.name)).toContain("source_kind")
     expect(cols.map((c) => c.name)).toContain("authority")
+    expect(logCols.map((c) => c.name)).toContain("category")
+    d2.close()
     unlinkSync(p)
   })
 

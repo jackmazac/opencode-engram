@@ -23,6 +23,7 @@ import { applyConnPragmas, openMemoryDb, sidecarPath } from "../db.ts"
 import { distillRoots, formatDistillSummary } from "../distill.ts"
 import { formatEvalReport, runEval } from "../eval.ts"
 import { backfillHot, formatHotBackfillSummary, type BackfillStrategy } from "../hot-backfill.ts"
+import { formatEventReport, recentLogEvents, pruneLogEvents, trimLogEvents, type LogLevel } from "../logger.ts"
 import { runMaintenance } from "../maintenance.ts"
 import { runManualSprint } from "../manual-sprint.ts"
 import { defaultHotDbPath } from "../paths.ts"
@@ -59,6 +60,12 @@ function numberArg(args: string[], name: string, fallback: number): number {
 function valueArg(args: string[], name: string): string | undefined {
   const i = args.indexOf(name)
   return i >= 0 ? args[i + 1] : undefined
+}
+
+function levelArg(args: string[]): LogLevel | undefined {
+  const raw = valueArg(args, "--level")
+  if (raw === "debug" || raw === "info" || raw === "warn" || raw === "error" || raw === "fatal") return raw
+  return undefined
 }
 
 async function confirm(question: string): Promise<boolean> {
@@ -109,7 +116,7 @@ async function main() {
   engram curate [--apply] [--max N] [--project-id ID] [--worktree DIR]
   engram dashboard [--json] [--project-id ID] [--worktree DIR]
   engram maintain [--apply] [--prune-telemetry] [--verify-archives] [--export-stale] [--compact-db] [--health-report] [--project-id ID] [--worktree DIR]
-  engram telemetry [--limit N] [--project-id ID] [--worktree DIR]
+  engram telemetry [--events] [--json] [--level debug|info|warn|error|fatal] [--limit N] [--project-id ID] [--worktree DIR]
   engram sprint [--rows N] [--local-only] [--rerank] [--worktree DIR]`)
     process.exit(1)
   }
@@ -269,8 +276,20 @@ async function main() {
       console.error("Pass --project-id <uuid> or set ENGRAM_PROJECT_ID.")
       process.exit(1)
     }
+    const limit = numberArg(argv, "--limit", 200)
+    const minLevel = levelArg(argv)
     pruneMetrics(memoryDb, pid, cfg.telemetry.retainDays)
-    console.log(formatTelemetryReport(recentMetrics(memoryDb, pid, numberArg(argv, "--limit", 200)), "CLI"))
+    pruneLogEvents(memoryDb, pid, cfg.telemetry.eventRetainDays)
+    trimLogEvents(memoryDb, pid, cfg.telemetry.eventMaxRows)
+    const metrics = recentMetrics(memoryDb, pid, limit)
+    const events = recentLogEvents(memoryDb, pid, { limit, minLevel })
+    if (argv.includes("--json")) {
+      console.log(JSON.stringify({ metrics, events }, null, 2))
+    } else if (argv.includes("--events")) {
+      console.log(formatEventReport(events, "CLI"))
+    } else {
+      console.log([formatTelemetryReport(metrics, "CLI"), formatEventReport(events, "CLI")].join("\n\n"))
+    }
     memoryDb.close()
     return
   }

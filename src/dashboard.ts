@@ -2,6 +2,7 @@ import { existsSync, statSync } from "node:fs"
 import type { Database } from "bun:sqlite"
 import type { EngramConfig } from "./config.ts"
 import { sidecarPath } from "./db.ts"
+import { logEventCounts, type LogEventRow } from "./logger.ts"
 import { defaultHotDbPath } from "./paths.ts"
 import { formatTelemetryReport, recentMetrics } from "./telemetry.ts"
 
@@ -45,6 +46,11 @@ export type DashboardReport = {
     byType: Record<string, number>
   }
   telemetry: string
+  events: {
+    recent: number
+    byLevel: Record<string, number>
+    latest: LogEventRow[]
+  }
   recommendations: string[]
 }
 
@@ -160,6 +166,7 @@ export function buildDashboardReport(opts: {
       byType: Object.fromEntries(backlogByType.map((r) => [r.k, r.n])),
     },
     telemetry: formatTelemetryReport(recentMetrics(opts.db, opts.projectId, opts.telemetryLimit ?? 100), "dashboard"),
+    events: logEventCounts(opts.db, opts.projectId, 100),
     recommendations: [],
   }
   report.recommendations = recommendations(report)
@@ -180,8 +187,17 @@ export function formatDashboardReport(report: DashboardReport): string {
       : `Eval: runs=0`,
     `Coverage: artifacts=${report.coverage.artifactSources}/${report.coverage.artifactItems} roots=${report.coverage.rootSessionsIndexed} distillations=${report.coverage.distillations} relations=${report.coverage.relations}`,
     `Embedding backlog: oldest=${report.embeddingBacklog.oldestAgeHours == null ? "n/a" : `${round(report.embeddingBacklog.oldestAgeHours)}h`} bySource=${kv(report.embeddingBacklog.bySourceKind)} byType=${kv(report.embeddingBacklog.byType)}`,
+    `Events: recent=${report.events.recent} ${kv(report.events.byLevel)}`,
     report.telemetry,
   ]
+  const warnings = report.events.latest.filter(
+    (row) => row.level === "warn" || row.level === "error" || row.level === "fatal",
+  )
+  if (warnings.length) {
+    lines.push("Recent warnings/errors:")
+    for (const row of warnings.slice(0, 5))
+      lines.push(`- ${row.level} ${row.category}.${row.event}: ${row.message ?? row.detail ?? ""}`)
+  }
   if (report.recommendations.length) {
     lines.push("Recommendations:")
     for (const r of report.recommendations) lines.push(`- ${r}`)

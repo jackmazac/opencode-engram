@@ -6,10 +6,10 @@ const busyMs = 5000
 
 /** WAL + safety for the Engram sidecar DB (create/migrate). */
 export function applySidecarPragmas(db: Database) {
+  db.run(`PRAGMA busy_timeout = ${busyMs};`)
   db.run("PRAGMA journal_mode = WAL;")
   db.run("PRAGMA synchronous = NORMAL;")
   db.run("PRAGMA foreign_keys = ON;")
-  db.run(`PRAGMA busy_timeout = ${busyMs};`)
 }
 
 /** Shared hot CLI connection: FK checks + brief busy wait under contention. */
@@ -466,6 +466,33 @@ CREATE INDEX IF NOT EXISTS idx_memory_relation_project_to ON memory_relation(pro
 PRAGMA user_version = 11;
     `)
     v = 11
+  }
+
+  if (v < 12) {
+    db.exec(`
+CREATE TABLE IF NOT EXISTS log_event (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  level TEXT NOT NULL,
+  category TEXT NOT NULL,
+  event TEXT NOT NULL,
+  operation TEXT,
+  status TEXT,
+  message TEXT,
+  detail TEXT,
+  duration_ms REAL,
+  rows_count INTEGER,
+  bytes_count INTEGER,
+  time_created INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_log_event_project_time ON log_event(project_id, time_created DESC);
+CREATE INDEX IF NOT EXISTS idx_log_event_project_level_time ON log_event(project_id, level, time_created DESC);
+CREATE INDEX IF NOT EXISTS idx_log_event_project_category_time ON log_event(project_id, category, time_created DESC);
+
+PRAGMA user_version = 12;
+    `)
+    v = 12
   }
 }
 
