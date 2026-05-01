@@ -21,6 +21,19 @@ const capture = z.object({
   extraPartTypes: z.array(z.string()).default([]),
   /** When non-empty, only these `part.type` values are captured (others skipped). */
   allowPartTypes: z.array(z.string()).default([]),
+  policy: z
+    .object({
+      denyToolNames: z.array(z.string()).default(["read", "grep", "glob"]),
+      captureCompletedToolOutput: z.boolean().default(false),
+      captureErrorToolOutput: z.boolean().default(true),
+      maxToolOutputLength: z.number().int().nonnegative().default(10_000),
+    })
+    .default({
+      denyToolNames: ["read", "grep", "glob"],
+      captureCompletedToolOutput: false,
+      captureErrorToolOutput: true,
+      maxToolOutputLength: 10_000,
+    }),
 })
 
 const classify = z.object({
@@ -81,6 +94,36 @@ const backfillCfg = z.object({
   lookbackDays: z.number().int().positive().default(90),
 })
 
+const telemetry = z.object({
+  enabled: z.boolean().default(true),
+  slowMs: z.number().int().positive().default(250),
+  detailMaxLength: z.number().int().positive().default(2000),
+  retainDays: z.number().int().positive().default(14),
+})
+
+const integration = z.object({
+  profile: z.enum(["standalone", "opencode-artifacts", "orchestrator"]).default("standalone"),
+  artifactPaths: z
+    .object({
+      plans: z.string().default(".opencode/plans"),
+      audits: z.string().default(".opencode/audits"),
+      journal: z.string().default(".opencode/journal.jsonl"),
+      progress: z.string().default(".opencode/progress"),
+      auditProgress: z.string().default(".opencode/audit-progress"),
+      status: z.string().default(".opencode/status"),
+      handoff: z.string().default(".opencode/handoff.md"),
+    })
+    .default({
+      plans: ".opencode/plans",
+      audits: ".opencode/audits",
+      journal: ".opencode/journal.jsonl",
+      progress: ".opencode/progress",
+      auditProgress: ".opencode/audit-progress",
+      status: ".opencode/status",
+      handoff: ".opencode/handoff.md",
+    }),
+})
+
 const hints = z.object({
   /** Append a short <engram-hint> to system for root sessions only (no parentID). Like DCP, skips internal agent signatures. */
   orchestrator: z.boolean().default(true),
@@ -100,6 +143,8 @@ export const EngramConfig = z.object({
   insights,
   memorySearch,
   backfill: backfillCfg,
+  telemetry,
+  integration,
 })
 
 export type EngramConfig = z.infer<typeof EngramConfig>
@@ -123,6 +168,12 @@ export const defaultEngramConfig = EngramConfig.parse({
     skipPartTypes: ["step-start", "step-finish", "snapshot"],
     extraPartTypes: [],
     allowPartTypes: [],
+    policy: {
+      denyToolNames: ["read", "grep", "glob"],
+      captureCompletedToolOutput: false,
+      captureErrorToolOutput: true,
+      maxToolOutputLength: 10_000,
+    },
   },
   classify: {
     model: "gpt-5.4-nano",
@@ -175,6 +226,24 @@ export const defaultEngramConfig = EngramConfig.parse({
   backfill: {
     enabled: true,
     lookbackDays: 90,
+  },
+  telemetry: {
+    enabled: true,
+    slowMs: 250,
+    detailMaxLength: 2000,
+    retainDays: 14,
+  },
+  integration: {
+    profile: "standalone",
+    artifactPaths: {
+      plans: ".opencode/plans",
+      audits: ".opencode/audits",
+      journal: ".opencode/journal.jsonl",
+      progress: ".opencode/progress",
+      auditProgress: ".opencode/audit-progress",
+      status: ".opencode/status",
+      handoff: ".opencode/handoff.md",
+    },
   },
 })
 

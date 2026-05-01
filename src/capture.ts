@@ -12,9 +12,8 @@ function provisionalType(agent: string): string {
 function shouldSkip(type: string, cfg: EngramConfig): boolean {
   const allow = cfg.capture.allowPartTypes
   if (allow.length > 0 && !allow.includes(type)) return true
-  const skip = new Set(cfg.capture.skipPartTypes)
   if (cfg.capture.extraPartTypes.includes(type)) return false
-  return skip.has(type)
+  return cfg.capture.skipPartTypes.includes(type)
 }
 
 function trunc(s: string, n: number): string {
@@ -114,9 +113,12 @@ export function fromPart(
     const tool = part.tool as string
     const st = part.state as Record<string, unknown>
     const status = st.status as string
+    const policy = cfg.capture.policy
+    if (status === "completed" && policy.denyToolNames.includes(tool)) return []
     let output = ""
-    if (status === "completed") output = (st as { output?: string }).output ?? ""
-    if (status === "error") output = (st as { error?: string }).error ?? ""
+    if (status === "completed" && policy.captureCompletedToolOutput) output = (st as { output?: string }).output ?? ""
+    if (status === "error" && policy.captureErrorToolOutput) output = (st as { error?: string }).error ?? ""
+    output = trunc(output, policy.maxToolOutputLength)
     const head = cfg.capture.toolOutputHead > 0 ? trunc(output, cfg.capture.toolOutputHead) : ""
     const tailS = cfg.capture.toolOutputTail > 0 ? tail(output, cfg.capture.toolOutputTail) : ""
     const summary = JSON.stringify({ tool, status, args: st.input })
@@ -239,7 +241,8 @@ export function fromMirroredTool(
   planSlug: string | null,
 ): ChunkInsert[] {
   if (tool === "journal" && cfg.capture.journalMirror && output) {
-    const h = contentHash(output + sessionID + "journal")
+    const content = trunc(output, cfg.sidecar.maxChunkLength)
+    const h = contentHash(content + sessionID + "journal")
     return [
       {
         id: "",
@@ -251,7 +254,7 @@ export function fromMirroredTool(
         agent: null,
         model: null,
         content_type: "decision",
-        content: trunc(output, cfg.sidecar.maxChunkLength),
+        content,
         file_paths: null,
         tool_name: "journal",
         tool_status: "completed",
@@ -268,7 +271,8 @@ export function fromMirroredTool(
     ]
   }
   if (tool === "plan" && cfg.capture.planMirror && output) {
-    const h = contentHash(output + sessionID + "plan")
+    const content = trunc(output, cfg.sidecar.maxChunkLength)
+    const h = contentHash(content + sessionID + "plan")
     return [
       {
         id: "",
@@ -280,7 +284,7 @@ export function fromMirroredTool(
         agent: null,
         model: null,
         content_type: "plan",
-        content: trunc(output, cfg.sidecar.maxChunkLength),
+        content,
         file_paths: null,
         tool_name: "plan",
         tool_status: "completed",

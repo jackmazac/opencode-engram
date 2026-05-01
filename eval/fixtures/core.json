@@ -1,0 +1,57 @@
+{
+  "name": "core",
+  "projectId": "engram-eval-core",
+  "chunks": [
+    {
+      "id": "decision-backfill-progress",
+      "type": "decision",
+      "content": "Backfill cursor progress advances only after captured rows are durably inserted into memory.db. This prevents skipped assistant memories when the write queue is full."
+    },
+    {
+      "id": "archive-verify-before-delete",
+      "type": "invariant",
+      "content": "Archive delete must verify gzip hash, archive row metadata, and file existence before removing session trees from the hot opencode database."
+    },
+    {
+      "id": "vector-bruteforce-decision",
+      "type": "perf_note",
+      "content": "Do not add sqlite-vec yet. We are not implementing sqlite vec right now. Keep the streaming brute force vector scan canonical until telemetry shows vectorMs p95 or candidate counts are real bottlenecks."
+    },
+    {
+      "id": "taxonomy-api-contract",
+      "type": "api_contract",
+      "content": "The memory taxonomy includes bug, decision, invariant, api_contract, migration, test_strategy, perf_note, and product_requirement for precise scoped retrieval."
+    },
+    {
+      "id": "dashboard-cli-json",
+      "type": "product_requirement",
+      "content": "The Engram dashboard should have CLI, TUI, and JSON output only. Do not build a browser dashboard for local telemetry and archive status."
+    }
+  ],
+  "queries": [
+    {
+      "id": "q-backfill-durable",
+      "query": "How should backfill avoid skipping rows when persisting progress?",
+      "expected": ["decision-backfill-progress"],
+      "limit": 3
+    },
+    {
+      "id": "q-archive-safety",
+      "query": "What must happen before deleting archived hot database sessions?",
+      "expected": ["archive-verify-before-delete"],
+      "limit": 3
+    },
+    {
+      "id": "q-vector-index",
+      "query": "not implementing sqlite vec right now",
+      "expected": ["vector-bruteforce-decision"],
+      "limit": 3
+    },
+    {
+      "id": "q-dashboard-scope",
+      "query": "Engram dashboard should have CLI TUI and JSON output only",
+      "expected": ["dashboard-cli-json"],
+      "limit": 3
+    }
+  ]
+}

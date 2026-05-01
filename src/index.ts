@@ -59,13 +59,37 @@ export const EngramPlugin: Plugin = async (input) => {
           })
         },
       }),
-      stats: tool({
-        description: "Project memory statistics: overview, db-health, insights (cached).",
+      memory_feedback: tool({
+        description: "Record whether a returned memory chunk was useful so future retrieval can learn from feedback.",
         args: {
-          report: z
-            .string()
-            .optional()
-            .describe("overview (default) | db-health | insights"),
+          chunk_id: z.string().describe("Memory chunk id to rate"),
+          rating: z.enum(["up", "down"]).describe("up = useful, down = not useful"),
+          note: z.string().optional().describe("Optional short reason"),
+        },
+        async execute(args, ctx) {
+          return rt.feedbackTool({
+            chunk_id: args.chunk_id,
+            rating: args.rating,
+            note: args.note,
+            session_id: ctx.sessionID,
+          })
+        },
+      }),
+      memory_context: tool({
+        description:
+          "Build a bounded preflight context bundle from high-authority project memory before planning or review.",
+        args: {
+          query: z.string().describe("Planning/review topic to retrieve context for"),
+          limit: z.number().optional().describe("Max raw memories to inspect before grouping (default 12)"),
+        },
+        async execute(args) {
+          return rt.contextTool({ query: args.query, limit: args.limit })
+        },
+      }),
+      stats: tool({
+        description: "Project memory statistics: overview, db-health, telemetry, insights (cached).",
+        args: {
+          report: z.string().optional().describe("overview (default) | db-health | telemetry | insights"),
         },
         async execute(args) {
           return rt.statsTool(args.report)

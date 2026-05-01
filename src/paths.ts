@@ -4,8 +4,7 @@ import { xdgData } from "xdg-basedir"
 
 /** Matches opencode Global.Path.data: xdg data + "opencode" */
 export function opencodeDataDir(): string {
-  if (process.env.OPENCODE_TEST_HOME)
-    return path.join(process.env.OPENCODE_TEST_HOME, ".local", "share", "opencode")
+  if (process.env.OPENCODE_TEST_HOME) return path.join(process.env.OPENCODE_TEST_HOME, ".local", "share", "opencode")
   const base = xdgData ?? path.join(os.homedir(), ".local", "share")
   return path.join(base, "opencode")
 }

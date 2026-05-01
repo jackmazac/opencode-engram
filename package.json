@@ -1,11 +1,31 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "name": "@opencode-ai/engram",
-  "version": "1.3.0",
+  "name": "opencode-engram",
+  "version": "0.1.0",
+  "description": "Long-term project memory, evals, telemetry, and archive workflows for OpenCode.",
   "type": "module",
   "license": "MIT",
-  "private": true,
+  "private": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jackmazac/opencode-engram.git"
+  },
+  "homepage": "https://github.com/jackmazac/opencode-engram#readme",
+  "bugs": {
+    "url": "https://github.com/jackmazac/opencode-engram/issues"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "memory",
+    "agent-memory",
+    "retrieval",
+    "sqlite",
+    "eval"
+  ],
   "scripts": {
+    "check": "bun run typecheck && bun test --timeout 30000",
+    "sprint": "bun run ./src/cli/run.ts sprint --local-only --rows 3000 --worktree .",
     "typecheck": "tsgo --noEmit",
     "test": "bun test --timeout 30000"
   },
@@ -13,8 +33,17 @@
     "engram": "./src/cli/run.ts"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./cli": "./src/cli/run.ts",
+    "./bridge": "./src/bridge-contract.ts"
   },
+  "files": [
+    "src",
+    "eval/fixtures",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
   "dependencies": {
     "@ai-sdk/openai": "2.0.89",
     "@opencode-ai/plugin": "1.3.3",

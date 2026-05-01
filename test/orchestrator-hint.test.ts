@@ -1,9 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import {
-  ORCHESTRATOR_HINT_BLOCK,
-  appendOrchestratorHint,
-  systemLooksInternal,
-} from "../src/orchestrator-hint.ts"
+import { ORCHESTRATOR_HINT_BLOCK, appendOrchestratorHint, systemLooksInternal } from "../src/orchestrator-hint.ts"
 
 describe("orchestrator hint", () => {
   test("systemLooksInternal", () => {

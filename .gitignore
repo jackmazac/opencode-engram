@@ -1,5 +1,10 @@
 node_modules/
+.opencode/
 .env
 .env.*
 !.env.example
 .DS_Store
+*.db
+*.db-shm
+*.db-wal
+eval/runs/

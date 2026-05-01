@@ -3,21 +3,30 @@ import type { Database } from "bun:sqlite"
 import type { EngramConfig } from "./config.ts"
 import { classifyBatchSchema, responsesStructured, type ClassifyBatch } from "./openai.ts"
 
-const allowed = new Set([
+export const memoryTypes = [
   "synthesis",
   "analysis",
+  "api_contract",
+  "bug",
+  "contract",
   "decision",
   "discovery",
-  "reasoning",
-  "plan",
-  "contract",
   "error",
-  "tool_trace",
+  "invariant",
   "milestone",
+  "migration",
   "pattern",
-])
+  "perf_note",
+  "plan",
+  "product_requirement",
+  "reasoning",
+  "test_strategy",
+  "tool_trace",
+] as const
 
-const sys = `Classify each chunk. Valid types: synthesis, analysis, decision, discovery, reasoning, plan, contract, error, tool_trace, milestone, pattern.
+const allowed = new Set<string>(memoryTypes)
+
+const sys = `Classify each chunk. Valid types: ${memoryTypes.join(", ")}.
 Respond with JSON only: object with key "items" — array of { id, type, confidence } where confidence is a number or null.
 Include one item per chunk listed.`
 
@@ -43,7 +52,13 @@ export function parseClassifyJsonLine(line: string): { id: string; type: string;
   return { id, type: ty }
 }
 
-function applyClassifyItems(db: Database, data: ClassifyBatch) {
+function meetsThreshold(confidence: number | null, threshold: number): boolean {
+  if (confidence == null) return true
+  const normalized = Math.min(1, Math.max(0, threshold / 100))
+  return confidence >= normalized
+}
+
+export function applyClassifyItems(db: Database, cfg: EngramConfig, data: ClassifyBatch) {
   const insProposal = db.prepare(
     `INSERT INTO type_proposal (id, proposed_type, chunk_id, confidence, time_created) VALUES (?, ?, ?, ?, ?)`,
   )
@@ -52,11 +67,11 @@ function applyClassifyItems(db: Database, data: ClassifyBatch) {
   const tx = db.transaction(() => {
     for (const it of data.items) {
       hits++
-      if (allowed.has(it.type)) {
+      const c = it.confidence
+      if (allowed.has(it.type) && meetsThreshold(c, cfg.classify.typeProposalThreshold)) {
         upd.run(it.type, it.id)
         continue
       }
-      const c = it.confidence
       insProposal.run(ulid(), it.type, it.id, c, Date.now())
     }
   })
@@ -85,7 +100,7 @@ export async function classifyBatch(opts: {
       schemaName: "classify_batch",
       schema: classifyBatchSchema,
     })
-    return applyClassifyItems(opts.db, parsed)
+    return applyClassifyItems(opts.db, opts.cfg, parsed)
   }
 
   const rows = opts.rows

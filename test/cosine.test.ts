@@ -11,4 +11,14 @@ describe("topKByCosine", () => {
     const k = topKByCosine(q, rows, 1)
     expect(k[0]?.id).toBe("a")
   })
+
+  test("skips vectors with mismatched dimensions", () => {
+    const q = new Float32Array([1, 0, 0])
+    const rows = [
+      { id: "bad", blob: Buffer.from(new Float32Array([1, 0]).buffer) },
+      { id: "good", blob: Buffer.from(new Float32Array([0.8, 0.2, 0]).buffer) },
+    ]
+    const k = topKByCosine(q, rows, 2)
+    expect(k.map((x) => x.id)).toEqual(["good"])
+  })
 })

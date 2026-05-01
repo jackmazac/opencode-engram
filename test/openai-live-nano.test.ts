@@ -3,19 +3,13 @@
  */
 import { describe, expect, test } from "bun:test"
 import { defaultEngramConfig } from "../src/config.ts"
-import {
-  classifyBatchSchema,
-  rerankIdsSchema,
-  resolveApiKey,
-  responsesStructured,
-} from "../src/openai.ts"
+import { classifyBatchSchema, rerankIdsSchema, resolveApiKey, responsesStructured } from "../src/openai.ts"
 
 const key = resolveApiKey()
 
 if (!key) {
   describe.skip("live OpenAI gpt-5.4-nano", () => {})
 } else {
-
   describe("live OpenAI gpt-5.4-nano", () => {
     const model = defaultEngramConfig.classify.model
 

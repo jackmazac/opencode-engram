@@ -7,19 +7,23 @@ import path from "node:path"
 import type { EngramConfig } from "./config.ts"
 import { loadConfig } from "./config.ts"
 import { exportRootSession, staleRootIds } from "./archive.ts"
-import { backfillFromHot } from "./backfill.ts"
+import { backfillDone, backfillFromHot, markBackfillProgress } from "./backfill.ts"
 import { applyConnPragmas, openMemoryDb, sidecarPath } from "./db.ts"
 import * as capture from "./capture.ts"
 import { defaultHotDbPath } from "./paths.ts"
 import type { ChunkInsert } from "./types.ts"
 import { embedTexts, resolveApiKey } from "./openai.ts"
 import { classifyBatch } from "./classify.ts"
+import { buildContextBundle, formatContextBundle } from "./context.ts"
 import { formatHits, searchMemory } from "./retrieve.ts"
+import { ORCHESTRATOR_HINT_BLOCK, appendOrchestratorHint, systemLooksInternal } from "./orchestrator-hint.ts"
 import {
-  ORCHESTRATOR_HINT_BLOCK,
-  appendOrchestratorHint,
-  systemLooksInternal,
-} from "./orchestrator-hint.ts"
+  formatTelemetryReport,
+  memorySnapshot,
+  pruneMetrics,
+  recentMetrics,
+  recordMetric as insertMetric,
+} from "./telemetry.ts"
 
 export class EngramRuntime {
   db: Database
@@ -38,6 +42,10 @@ export class EngramRuntime {
   private pForgetSessCt!: ReturnType<Database["prepare"]>
   private pInsRetrieval!: ReturnType<Database["prepare"]>
   private pUpsertSessMem!: ReturnType<Database["prepare"]>
+  private pInsertChunk!: ReturnType<Database["prepare"]>
+  private pCopyEmbedding!: ReturnType<Database["prepare"]>
+  private pUpdateEmbedding!: ReturnType<Database["prepare"]>
+  private pUpdateRetrievalRefs!: ReturnType<Database["prepare"]>
 
   private writeBuf: ChunkInsert[] = []
   private timers: ReturnType<typeof setInterval>[] = []
@@ -45,6 +53,7 @@ export class EngramRuntime {
   private planSlug = new Map<string, string | null>()
   private lastRetrieval = new Map<string, { ids: string[]; logId: string }>()
   private archiveBusy = false
+  private embedBusy = false
 
   constructor(input: PluginInput, cfg: EngramConfig) {
     this.input = input
@@ -73,9 +82,7 @@ export class EngramRuntime {
     this.pMetaBackfill = d.prepare(`SELECT v FROM engram_meta WHERE k = 'backfill_v1_done'`)
     this.pFrictionLatest = d.prepare(`SELECT report FROM friction_cache ORDER BY time_created DESC LIMIT 1`)
     this.pLogRef = d.prepare(`SELECT referenced_ids FROM retrieval_log WHERE id = ?`)
-    this.pForgetSessCt = d.prepare(
-      `SELECT count(*) AS c FROM chunk WHERE session_id = ? AND project_id = ?`,
-    )
+    this.pForgetSessCt = d.prepare(`SELECT count(*) AS c FROM chunk WHERE session_id = ? AND project_id = ?`)
     this.pInsRetrieval = d.prepare(
       `INSERT INTO retrieval_log (id, session_id, query, returned_ids, time_created)
        VALUES (?, ?, ?, ?, ?)`,
@@ -85,6 +92,22 @@ export class EngramRuntime {
        VALUES (?, ?, ?, ?)
        ON CONFLICT(session_id) DO UPDATE SET log_id = excluded.log_id, chunk_ids = excluded.chunk_ids, updated_at = excluded.updated_at`,
     )
+    this.pInsertChunk = d.prepare(
+      `INSERT INTO chunk (
+        id, session_id, message_id, part_id, project_id, role, agent, model, content_type, content,
+        file_paths, tool_name, tool_status, output_head, output_tail, output_length, error_class,
+        time_created, content_hash, root_session_id, session_depth, plan_slug
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    )
+    this.pCopyEmbedding = d.prepare(
+      `SELECT embedding FROM chunk
+       WHERE project_id = ? AND content_hash = ? AND embedding_model = ? AND embedding_dimensions = ? AND embedding IS NOT NULL
+       LIMIT 1`,
+    )
+    this.pUpdateEmbedding = d.prepare(
+      `UPDATE chunk SET embedding = ?, time_embedded = ?, embedding_model = ?, embedding_dimensions = ? WHERE id = ?`,
+    )
+    this.pUpdateRetrievalRefs = d.prepare(`UPDATE retrieval_log SET referenced_ids = ? WHERE id = ?`)
 
     const wMs = 500
     this.timers.push(
@@ -135,36 +158,74 @@ export class EngramRuntime {
   }
 
   onToolAfter(tool: string, sessionID: string, output: string) {
-    const rows = capture.fromMirroredTool(tool, output, sessionID, this.input.project.id, this.cfg, this.planSlug.get(sessionID) ?? null)
+    const rows = capture.fromMirroredTool(
+      tool,
+      output,
+      sessionID,
+      this.input.project.id,
+      this.cfg,
+      this.planSlug.get(sessionID) ?? null,
+    )
     this.enqueue(rows)
     if (tool === "plan" || tool === "journal") {
       const slug = extractSlug(output)
       if (slug) this.planSlug.set(sessionID, slug)
     }
 
-    this.feedbackHook(sessionID, tool, output)
+    const last = this.lastRetrieval.get(sessionID)
+    if (last?.ids.length) {
+      const feedbackOutput = output.length > 20_000 ? `${output.slice(0, 10_000)}\n${output.slice(-10_000)}` : output
+      queueMicrotask(() => this.feedbackHook(sessionID, tool, feedbackOutput))
+    }
   }
 
   drainBackfill() {
     if (!this.cfg.enabled || !this.cfg.backfill.enabled) return
+    if (backfillDone(this.db)) return
     const hp = this.cfg.archive.hotDbPath ?? defaultHotDbPath()
     if (!fs.existsSync(hp)) return
+    const start = performance.now()
+    const before = memorySnapshot()
+    let status: "ok" | "error" = "ok"
+    let rowsCount = 0
+    let detail: Record<string, unknown> = { hotDb: hp }
+    this.drainWrite()
     const hot = new Database(hp, { readonly: true })
     applyConnPragmas(hot)
-    const rows = backfillFromHot({
-      hot,
-      memory: this.db,
-      projectId: this.input.project.id,
-      cfg: this.cfg,
-      batchLimit: 300,
-    })
-    hot.close()
-    if (rows.length) this.enqueue(rows)
+    let result: ReturnType<typeof backfillFromHot> | undefined
+    try {
+      result = backfillFromHot({
+        hot,
+        memory: this.db,
+        projectId: this.input.project.id,
+        cfg: this.cfg,
+        batchLimit: 300,
+      })
+    } catch (e) {
+      status = "error"
+      detail = { ...detail, error: e instanceof Error ? e.message : String(e) }
+    } finally {
+      hot.close()
+    }
+    if (!result) {
+      this.recordMetric("backfill.drain", status, performance.now() - start, rowsCount, null, before, detail)
+      return
+    }
+    if (result.rows.length) rowsCount = this.insertRows(result.rows)
+    markBackfillProgress(this.db, result)
+    detail = {
+      ...detail,
+      capturedRows: result.rows.length,
+      insertedRows: rowsCount,
+      done: result.done,
+    }
+    this.recordMetric("backfill.drain", status, performance.now() - start, rowsCount, null, before, detail)
   }
 
   private enqueue(rows: ChunkInsert[]) {
     if (!this.cfg.enabled) return
     for (const r of rows) {
+      if (this.writeBuf.length >= this.cfg.embed.queueMax) this.drainWrite()
       if (this.writeBuf.length >= this.cfg.embed.queueMax) this.writeBuf.shift()
       const id = ulid()
       r.id = id
@@ -175,20 +236,19 @@ export class EngramRuntime {
   private drainWrite() {
     if (this.writeBuf.length === 0) return
     const batch = this.writeBuf.splice(0, 50)
-    const exists = this.db.prepare(
-      `SELECT 1 FROM chunk WHERE project_id = ? AND content_hash = ? LIMIT 1`,
-    )
-    const ins = this.db.prepare(
-      `INSERT INTO chunk (
-        id, session_id, message_id, part_id, project_id, role, agent, model, content_type, content,
-        file_paths, tool_name, tool_status, output_head, output_tail, output_length, error_class,
-        time_created, content_hash, root_session_id, session_depth, plan_slug
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    )
+    this.insertRows(batch)
+  }
+
+  private insertRows(batch: ChunkInsert[]) {
+    if (batch.length === 0) return 0
+    const seen = this.existingChunkKeys(batch)
+    let inserted = 0
     const tx = this.db.transaction((rows: ChunkInsert[]) => {
       for (const r of rows) {
-        if (exists.get(r.project_id, r.content_hash)) continue
-        ins.run(
+        if (!r.id) r.id = ulid()
+        const key = chunkIdentityKey(r)
+        if (seen.has(key)) continue
+        this.pInsertChunk.run(
           r.id,
           r.session_id,
           r.message_id,
@@ -212,77 +272,169 @@ export class EngramRuntime {
           r.session_depth,
           r.plan_slug,
         )
+        seen.add(key)
+        inserted++
       }
     })
     tx(batch)
+    return inserted
+  }
+
+  private existingChunkKeys(batch: ChunkInsert[]): Set<string> {
+    const wanted = new Map<string, ChunkInsert>()
+    for (const row of batch) wanted.set(chunkIdentityKey(row), row)
+    if (wanted.size === 0) return new Set()
+
+    const clauses = Array.from(wanted.values())
+      .map(() => `(session_id = ? AND message_id = ? AND coalesce(part_id, '') = ? AND content_hash = ?)`)
+      .join(" OR ")
+    const args: string[] = [this.input.project.id]
+    for (const r of wanted.values()) args.push(r.session_id, r.message_id, r.part_id ?? "", r.content_hash)
+
+    const rows = this.db
+      .query(
+        `SELECT session_id, message_id, coalesce(part_id, '') AS part_key, content_hash
+         FROM chunk
+         WHERE project_id = ? AND (${clauses})`,
+      )
+      .all(...args) as {
+      session_id: string
+      message_id: string
+      part_key: string
+      content_hash: string
+    }[]
+
+    return new Set(
+      rows.map((r) => `${this.input.project.id}\0${r.session_id}\0${r.message_id}\0${r.part_key}\0${r.content_hash}`),
+    )
+  }
+
+  private recordMetric(
+    operation: string,
+    status: "ok" | "error" | "skip",
+    durationMs: number,
+    rowsCount: number | null,
+    bytesCount: number | null,
+    before: ReturnType<typeof memorySnapshot>,
+    detail: Record<string, unknown> | null,
+  ) {
+    if (!this.cfg.telemetry.enabled) return
+    try {
+      insertMetric(this.db, {
+        projectId: this.input.project.id,
+        operation,
+        status,
+        durationMs,
+        rowsCount,
+        bytesCount,
+        before,
+        after: memorySnapshot(),
+        detail,
+        detailMaxLength: this.cfg.telemetry.detailMaxLength,
+      })
+    } catch {
+      /* telemetry must never break plugin hooks */
+    }
   }
 
   private async drainEmbed() {
+    if (this.embedBusy) return
     const key = this.key
     if (!key) return
-    const cfg = this.cfg
-    const rows = this.pEmbQueue.all(this.input.project.id, cfg.embed.batchSize) as {
-      id: string
-      content: string
-      content_hash: string
-      content_type: string
-      agent: string | null
-    }[]
+    this.embedBusy = true
+    const start = performance.now()
+    const before = memorySnapshot()
+    let status: "ok" | "error" | "skip" = "ok"
+    let rowsCount = 0
+    let cacheHits = 0
+    let detail: Record<string, unknown> | null = null
+    try {
+      const cfg = this.cfg
+      const rows = this.pEmbQueue.all(this.input.project.id, cfg.embed.batchSize) as {
+        id: string
+        content: string
+        content_hash: string
+        content_type: string
+        agent: string | null
+      }[]
 
-    if (rows.length === 0) return
+      if (rows.length === 0) return
+      rowsCount = rows.length
 
-    const copyStmt = this.db.prepare(
-      `SELECT embedding FROM chunk WHERE content_hash = ? AND embedding IS NOT NULL LIMIT 1`,
-    )
-    const upd = this.db.prepare(
-      `UPDATE chunk SET embedding = ?, time_embedded = ? WHERE id = ?`,
-    )
-
-    const need: typeof rows = []
-    const now = Date.now()
-    for (const r of rows) {
-      if (cfg.embed.cacheByHash) {
-        const ex = copyStmt.get(r.content_hash) as { embedding: Buffer } | undefined
-        if (ex?.embedding) {
-          upd.run(ex.embedding, now, r.id)
-          continue
+      const need: typeof rows = []
+      const now = Date.now()
+      for (const r of rows) {
+        if (cfg.embed.cacheByHash) {
+          const ex = this.pCopyEmbedding.get(
+            this.input.project.id,
+            r.content_hash,
+            cfg.embed.model,
+            cfg.sidecar.dimensions,
+          ) as { embedding: Buffer } | undefined
+          if (ex?.embedding && ex.embedding.byteLength === cfg.sidecar.dimensions * 4) {
+            this.pUpdateEmbedding.run(ex.embedding, now, cfg.embed.model, cfg.sidecar.dimensions, r.id)
+            cacheHits++
+            continue
+          }
         }
+        need.push(r)
       }
-      need.push(r)
-    }
 
-    if (need.length === 0) return
+      if (need.length === 0) {
+        status = "skip"
+        detail = { selectedRows: rows.length, cacheHits, embeddedRows: 0 }
+        return
+      }
 
-    let vecs: number[][] = []
-    try {
-      vecs = await embedTexts({
-        key,
-        model: cfg.embed.model,
-        dimensions: cfg.sidecar.dimensions,
-        inputs: need.map((r) => r.content.slice(0, 8000)),
-      })
-    } catch {
-      return
-    }
+      let vecs: number[][] = []
+      try {
+        vecs = await embedTexts({
+          key,
+          model: cfg.embed.model,
+          dimensions: cfg.sidecar.dimensions,
+          inputs: need.map((r) => r.content.slice(0, 8000)),
+        })
+      } catch (e) {
+        status = "error"
+        detail = {
+          selectedRows: rows.length,
+          cacheHits,
+          embeddedRows: 0,
+          error: e instanceof Error ? e.message : String(e),
+        }
+        return
+      }
 
-    for (let i = 0; i < need.length; i++) {
-      const r = need[i]
-      const v = vecs[i]
-      if (!r || !v) continue
-      const f32 = new Float32Array(v)
-      const buf = Buffer.from(f32.buffer, f32.byteOffset, f32.byteLength)
-      upd.run(buf, now, r.id)
-    }
+      for (let i = 0; i < need.length; i++) {
+        const r = need[i]
+        const v = vecs[i]
+        if (!r || !v) continue
+        const f32 = new Float32Array(v)
+        const buf = Buffer.from(f32.buffer, f32.byteOffset, f32.byteLength)
+        this.pUpdateEmbedding.run(buf, now, cfg.embed.model, cfg.sidecar.dimensions, r.id)
+      }
 
-    const classified = need.map((r) => ({
-      id: r.id,
-      content: r.content,
-      agent: r.agent,
-    }))
-    try {
-      await classifyBatch({ db: this.db, cfg, key, rows: classified })
-    } catch {
-      /* keep provisional */
+      const classified = need.map((r) => ({
+        id: r.id,
+        content: r.content,
+        agent: r.agent,
+      }))
+      try {
+        await classifyBatch({ db: this.db, cfg, key, rows: classified })
+      } catch {
+        /* keep provisional */
+      }
+      detail = {
+        selectedRows: rows.length,
+        cacheHits,
+        embeddedRows: need.length,
+        classifiedRows: classified.length,
+      }
+    } finally {
+      if (rowsCount > 0) {
+        this.recordMetric("embed.drain", status, performance.now() - start, rowsCount, null, before, detail)
+      }
+      this.embedBusy = false
     }
   }
 
@@ -290,24 +442,43 @@ export class EngramRuntime {
     const key = this.key
     if (!key) throw new Error("OPENAI_API_KEY or engram.openaiApiKey required for memory search")
     const lim = limit ?? 5
-    const { hits } = await searchMemory({
-      db: this.db,
-      cfg: this.cfg,
-      projectId: this.input.project.id,
-      query,
-      scope,
+    const start = performance.now()
+    const before = memorySnapshot()
+    let status: "ok" | "error" = "ok"
+    let hitCount = 0
+    let detail: Record<string, unknown> = {
+      queryLength: query.length,
+      scope: scope ?? "broad",
       limit: lim,
-      key,
-      skipRerank: false,
-    })
+    }
+    try {
+      const { hits, metrics } = await searchMemory({
+        db: this.db,
+        cfg: this.cfg,
+        projectId: this.input.project.id,
+        query,
+        scope,
+        limit: lim,
+        key,
+        skipRerank: false,
+      })
+      hitCount = hits.length
+      detail = { ...detail, ...metrics }
 
-    const logId = ulid()
-    this.pInsRetrieval.run(logId, sessionID, query, JSON.stringify(hits.map((h) => h.id)), Date.now())
-    this.lastRetrieval.set(sessionID, { ids: hits.map((h) => h.id), logId })
+      const logId = ulid()
+      this.pInsRetrieval.run(logId, sessionID, query, JSON.stringify(hits.map((h) => h.id)), Date.now())
+      this.lastRetrieval.set(sessionID, { ids: hits.map((h) => h.id), logId })
 
-    this.pUpsertSessMem.run(sessionID, logId, JSON.stringify(hits.map((h) => h.id)), Date.now())
+      this.pUpsertSessMem.run(sessionID, logId, JSON.stringify(hits.map((h) => h.id)), Date.now())
 
-    return formatHits(hits)
+      return formatHits(hits)
+    } catch (e) {
+      status = "error"
+      detail = { ...detail, error: e instanceof Error ? e.message : String(e) }
+      throw e
+    } finally {
+      this.recordMetric("memory.search", status, performance.now() - start, hitCount, null, before, detail)
+    }
   }
 
   async injectSystem(sessionID: string | undefined, system: string[]): Promise<void> {
@@ -324,7 +495,12 @@ export class EngramRuntime {
         path: { id: sessionID },
         query: { directory: this.input.directory, limit: 30 },
       })
-      const raw = res as { data?: Array<{ info: { role: string }; parts: Array<{ type?: string; text?: string }> }> }
+      const raw = res as {
+        data?: Array<{
+          info: { role: string }
+          parts: Array<{ type?: string; text?: string }>
+        }>
+      }
       const msgs = raw.data ?? []
       const first = msgs.find((m) => m.info.role === "user") ?? msgs[0]
       if (first) {
@@ -378,12 +554,7 @@ export class EngramRuntime {
     appendOrchestratorHint(system, ORCHESTRATOR_HINT_BLOCK)
   }
 
-  forgetTool(opts: {
-    chunk_ids?: string[]
-    session_id?: string
-    pattern?: string
-    dry_run?: boolean
-  }) {
+  forgetTool(opts: { chunk_ids?: string[]; session_id?: string; pattern?: string; dry_run?: boolean }) {
     const dry = opts.dry_run !== false
     const cap = this.cfg.memorySearch.forgetPatternMaxRows
 
@@ -414,8 +585,8 @@ export class EngramRuntime {
       const matchPat = `"${opts.pattern.replace(/"/g, '""')}"`
       const rows = this.db
         .query(
-          `SELECT c.id FROM chunk_fts f INNER JOIN chunk c ON c.id = f.chunk_id
-           WHERE f MATCH ? AND c.project_id = ? LIMIT ?`,
+          `SELECT c.id FROM chunk_fts INNER JOIN chunk c ON c.id = chunk_fts.chunk_id
+           WHERE chunk_fts MATCH ? AND c.project_id = ? LIMIT ?`,
         )
         .all(matchPat, this.input.project.id, cap + 1) as { id: string }[]
 
@@ -434,14 +605,49 @@ export class EngramRuntime {
     return "Specify chunk_ids, session_id, or pattern."
   }
 
+  feedbackTool(opts: { chunk_id: string; rating: "up" | "down"; note?: string; session_id?: string }) {
+    this.db
+      .prepare(
+        `INSERT INTO retrieval_feedback (id, project_id, chunk_id, session_id, rating, note, time_created)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        ulid(),
+        this.input.project.id,
+        opts.chunk_id,
+        opts.session_id ?? null,
+        opts.rating,
+        opts.note ?? null,
+        Date.now(),
+      )
+    return `Recorded ${opts.rating} feedback for ${opts.chunk_id}.`
+  }
+
+  contextTool(opts: { query: string; limit?: number }) {
+    return formatContextBundle(
+      buildContextBundle({
+        db: this.db,
+        projectId: this.input.project.id,
+        query: opts.query,
+        limit: opts.limit ?? 12,
+      }),
+    )
+  }
+
   statsTool(report: string | undefined) {
     const pid = this.input.project.id
     const ttl = this.cfg.insights.cacheDays * 86400000
     this.db.prepare(`DELETE FROM friction_cache WHERE time_created < ?`).run(Date.now() - ttl)
 
-    const overview = this.pStatsOverview.get(pid) as { total: number; emb: number }
+    const overview = this.pStatsOverview.get(pid) as {
+      total: number
+      emb: number
+    }
 
-    const byType = this.pStatsByType.all(pid) as { content_type: string; n: number }[]
+    const byType = this.pStatsByType.all(pid) as {
+      content_type: string
+      n: number
+    }[]
 
     if (report === "db-health" || report === "overview" || !report) {
       const arch = this.pStatsArch.get(pid) as { c: number }
@@ -463,15 +669,18 @@ Archives: ${arch.c} | export checkpoints: ${ck.c} | backfill_done: ${bf?.v ?? "0
       return row?.report ?? "No insights cached yet."
     }
 
-    return `Report "${report}" not implemented in v1 — use overview | db-health | insights.`
+    if (report === "telemetry") {
+      pruneMetrics(this.db, pid, this.cfg.telemetry.retainDays)
+      return formatTelemetryReport(recentMetrics(this.db, pid, 200), "last 200")
+    }
+
+    return `Report "${report}" not implemented in v1 — use overview | db-health | insights | telemetry.`
   }
 
   feedbackHook(sessionID: string, _tool: string, output: string) {
     const last = this.lastRetrieval.get(sessionID)
     if (!last || last.ids.length === 0) return
-    const log = this.pLogRef.get(last.logId) as
-      | { referenced_ids: string | null }
-      | undefined
+    const log = this.pLogRef.get(last.logId) as { referenced_ids: string | null } | undefined
     const cited = new Set<string>()
     if (log?.referenced_ids) {
       try {
@@ -484,13 +693,19 @@ Archives: ${arch.c} | export checkpoints: ${ck.c} | backfill_done: ${bf?.v ?? "0
     for (const id of last.ids) {
       if (output.includes(id.slice(0, 12))) cited.add(id)
     }
-    this.db
-      .prepare(`UPDATE retrieval_log SET referenced_ids = ? WHERE id = ?`)
-      .run(JSON.stringify([...cited]), last.logId)
+    this.pUpdateRetrievalRefs.run(JSON.stringify([...cited]), last.logId)
   }
 
   onSessionIdle(ev: { properties?: { sessionID?: string } }) {
-    void this.maybeArchive(ev.properties?.sessionID)
+    const sessionID = ev.properties?.sessionID
+    void this.maybeArchive(sessionID)
+    if (sessionID) this.pruneSessionState(sessionID)
+  }
+
+  private pruneSessionState(sessionID: string) {
+    this.sessionAgent.delete(sessionID)
+    this.planSlug.delete(sessionID)
+    this.lastRetrieval.delete(sessionID)
   }
 
   private async maybeArchive(sessionID: string | undefined) {
@@ -501,7 +716,9 @@ Archives: ${arch.c} | export checkpoints: ${ck.c} | backfill_done: ${bf?.v ?? "0
 
     let busy = false
     try {
-      const st = await this.input.client.session.status({ query: { directory: this.input.directory } })
+      const st = await this.input.client.session.status({
+        query: { directory: this.input.directory },
+      })
       const data = st.data
       if (data && typeof data === "object") {
         for (const k of Object.keys(data)) {
@@ -536,6 +753,12 @@ Archives: ${arch.c} | export checkpoints: ${ck.c} | backfill_done: ${bf?.v ?? "0
       this.archiveBusy = false
     }
   }
+}
+
+function chunkIdentityKey(
+  r: Pick<ChunkInsert, "project_id" | "session_id" | "message_id" | "part_id" | "content_hash">,
+): string {
+  return `${r.project_id}\0${r.session_id}\0${r.message_id}\0${r.part_id ?? ""}\0${r.content_hash}`
 }
 
 function extractSlug(out: string): string | null {

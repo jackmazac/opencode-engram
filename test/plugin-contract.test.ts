@@ -16,9 +16,11 @@ describe("EngramPlugin", () => {
       $: {} as never,
     })
     const k = Object.keys(hooks)
-    expect(k.every((x) => ["event", "tool.execute.after", "experimental.chat.system.transform", "tool"].includes(x))).toBe(
-      true,
-    )
+    expect(
+      k.every((x) => ["event", "tool.execute.after", "experimental.chat.system.transform", "tool"].includes(x)),
+    ).toBe(true)
     expect(typeof hooks.tool?.memory?.execute).toBe("function")
+    expect(typeof hooks.tool?.memory_context?.execute).toBe("function")
+    expect(typeof hooks.tool?.memory_feedback?.execute).toBe("function")
   })
 })
