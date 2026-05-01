@@ -92,6 +92,9 @@ const memorySearch = z.object({
 const backfillCfg = z.object({
   enabled: z.boolean().default(true),
   lookbackDays: z.number().int().positive().default(90),
+  auto: z.boolean().default(false),
+  intervalMs: z.number().int().positive().default(60_000),
+  startupDelayMs: z.number().int().nonnegative().default(30_000),
 })
 
 const telemetry = z.object({
@@ -226,6 +229,9 @@ export const defaultEngramConfig = EngramConfig.parse({
   backfill: {
     enabled: true,
     lookbackDays: 90,
+    auto: false,
+    intervalMs: 60_000,
+    startupDelayMs: 30_000,
   },
   telemetry: {
     enabled: true,

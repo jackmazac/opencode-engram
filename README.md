@@ -89,6 +89,8 @@ bun run ./src/cli/run.ts sprint [--rows 3000] [--local-only] [--rerank] --worktr
 
 `ingest-artifacts`, `index-hot`, `backfill-hot`, `distill`, `relations`, and `context` are the long-term learning pipeline. They discover high-signal OpenCode artifacts, index root session trees, selectively backfill useful hot DB evidence, create deterministic root summaries, connect superseded memories, and produce bounded preflight context bundles. Mutating commands are dry-run by default and require `--apply`.
 
+Automatic hot DB backfill is **off by default** (`backfill.auto: false`) so plugin startup never scans large OpenCode databases. Use `backfill-hot` for explicit learning runs, or opt into scheduled legacy backfill with `backfill.auto: true` plus `backfill.startupDelayMs`/`backfill.intervalMs`.
+
 `eval` runs checked-in retrieval fixtures and records drift metadata. `dashboard` is CLI/JSON-only and summarizes memory health, archives, evals, telemetry, and learning coverage. `maintain` performs dry-run or explicit maintenance actions. `curate` proposes duplicate/low-value chunk cleanup and only mutates with `--apply`. `telemetry` summarizes sidecar operation metrics recorded by live plugin usage. `sprint` runs a manual latency/memory sprint: a deterministic local retrieval workload plus, when an OpenAI key resolves, a small live embedding retrieval accuracy fixture.
 
 The [`package.json`](package.json) `"bin"` field exposes the same entry as the `engram` command if you `bun link` or install the package locally.

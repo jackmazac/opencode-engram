@@ -48,7 +48,7 @@ export class EngramRuntime {
   private pUpdateRetrievalRefs!: ReturnType<Database["prepare"]>
 
   private writeBuf: ChunkInsert[] = []
-  private timers: ReturnType<typeof setInterval>[] = []
+  private timers: Array<ReturnType<typeof setInterval> | ReturnType<typeof setTimeout>> = []
   private sessionAgent = new Map<string, { agent: string | null; model: string | null }>()
   private planSlug = new Map<string, string | null>()
   private lastRetrieval = new Map<string, { ids: string[]; logId: string }>()
@@ -120,12 +120,18 @@ export class EngramRuntime {
         void this.drainEmbed()
       }, cfg.embed.intervalMs),
     )
-    this.timers.push(
-      setInterval(() => {
-        this.drainBackfill()
-      }, 60_000),
-    )
-    queueMicrotask(() => this.drainBackfill())
+    if (cfg.backfill.enabled && cfg.backfill.auto) {
+      this.timers.push(
+        setTimeout(() => {
+          this.drainBackfill()
+        }, cfg.backfill.startupDelayMs),
+      )
+      this.timers.push(
+        setInterval(() => {
+          this.drainBackfill()
+        }, cfg.backfill.intervalMs),
+      )
+    }
   }
 
   close() {
