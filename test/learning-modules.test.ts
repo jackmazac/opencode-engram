@@ -48,8 +48,17 @@ describe("learning modules", () => {
     expect(chunks.map((c) => c.content_type).sort()).toEqual(["decision", "plan"])
     expect(Math.max(...chunks.map((c) => c.authority))).toBe(10)
 
-    const bundle = buildContextBundle({ db, projectId: "p1", query: "durable insert", limit: 5 })
-    expect(formatContextBundle(bundle)).toContain("backfill cursor")
+    const bundle = buildContextBundle({
+      db,
+      projectId: "p1",
+      query: "durable insert",
+      mode: "plan",
+      limit: 5,
+    })
+    const formatted = formatContextBundle(bundle)
+    expect(formatted).toContain("Must Know")
+    expect(formatted).toContain("backfill cursor")
+    expect(formatted).toContain("why:")
 
     db.close()
     rmSync(dir, { recursive: true, force: true })

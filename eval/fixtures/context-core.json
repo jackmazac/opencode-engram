@@ -1,0 +1,74 @@
+{
+  "name": "context-core",
+  "projectId": "engram-context-core",
+  "chunks": [
+    {
+      "id": "brief-durable-decision",
+      "type": "decision",
+      "authority": 10,
+      "sourceKind": "journal",
+      "content": "Decision: brief persistence auto update must preserve durable connector awareness and avoid stale regenerated brief data."
+    },
+    {
+      "id": "brief-stale-risk",
+      "type": "bug",
+      "authority": 8,
+      "sourceKind": "audit",
+      "content": "Audit finding: stale brief auto update jobs can overwrite current meeting context if connector state is ignored."
+    },
+    {
+      "id": "review-test-strategy",
+      "type": "test_strategy",
+      "authority": 8,
+      "sourceKind": "review",
+      "content": "Reviewer guidance: test brief persistence with stale connector state, updated meetings, and failed auto update retries."
+    },
+    {
+      "id": "workspace-api-contract",
+      "type": "api_contract",
+      "authority": 10,
+      "sourceKind": "journal",
+      "content": "Contract: workspace tree nodes must keep stable IDs and scoped artifact paths during planner and executor workflows."
+    },
+    {
+      "id": "raw-read-tool-output",
+      "type": "tool_trace",
+      "authority": 0,
+      "sourceKind": "hot_tool:read",
+      "content": "Large completed read output from unrelated file list should not appear in compiled context bundles."
+    }
+  ],
+  "queries": [
+    {
+      "id": "plan-brief-persistence",
+      "query": "brief persistence auto update",
+      "mode": "plan",
+      "limit": 8,
+      "expectedSections": {
+        "must_know": ["brief-durable-decision"],
+        "current_risks": ["brief-stale-risk"]
+      },
+      "forbidden": ["raw-read-tool-output"]
+    },
+    {
+      "id": "review-brief-persistence",
+      "query": "review brief persistence stale connector",
+      "mode": "review",
+      "limit": 8,
+      "expectedSections": {
+        "current_risks": ["brief-stale-risk", "review-test-strategy"]
+      },
+      "forbidden": ["raw-read-tool-output"]
+    },
+    {
+      "id": "implement-workspace-contract",
+      "query": "workspace tree artifact path contract",
+      "mode": "implement",
+      "limit": 8,
+      "expectedSections": {
+        "must_know": ["workspace-api-contract"]
+      },
+      "forbidden": ["raw-read-tool-output"]
+    }
+  ]
+}

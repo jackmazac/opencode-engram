@@ -80,10 +80,20 @@ export const EngramPlugin: Plugin = async (input) => {
           "Build a bounded preflight context bundle from high-authority project memory before planning or review.",
         args: {
           query: z.string().describe("Planning/review topic to retrieve context for"),
+          mode: z
+            .enum(["plan", "implement", "review", "debug", "audit", "handoff"])
+            .optional()
+            .describe("Context mode: plan | implement | review | debug | audit | handoff"),
           limit: z.number().optional().describe("Max raw memories to inspect before grouping (default 12)"),
+          budget_chars: z.number().optional().describe("Approximate max characters in returned bundle"),
         },
         async execute(args) {
-          return rt.contextTool({ query: args.query, limit: args.limit })
+          return rt.contextTool({
+            query: args.query,
+            limit: args.limit,
+            mode: args.mode,
+            budgetChars: args.budget_chars,
+          })
         },
       }),
       stats: tool({

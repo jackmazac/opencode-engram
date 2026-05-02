@@ -14,7 +14,7 @@ import { defaultHotDbPath } from "./paths.ts"
 import type { ChunkInsert } from "./types.ts"
 import { embedTexts, resolveApiKey } from "./openai.ts"
 import { classifyBatch } from "./classify.ts"
-import { buildContextBundle, formatContextBundle } from "./context.ts"
+import { buildContextBundle, formatContextBundle, type ContextMode } from "./context.ts"
 import { EngramLogger, formatEventReport, pruneLogEvents, recentLogEvents } from "./logger.ts"
 import { formatHits, searchMemory } from "./retrieve.ts"
 import { ORCHESTRATOR_HINT_BLOCK, appendOrchestratorHint, systemLooksInternal } from "./orchestrator-hint.ts"
@@ -675,13 +675,15 @@ export class EngramRuntime {
     return `Recorded ${opts.rating} feedback for ${opts.chunk_id}.`
   }
 
-  contextTool(opts: { query: string; limit?: number }) {
+  contextTool(opts: { query: string; limit?: number; mode?: ContextMode; budgetChars?: number }) {
     return formatContextBundle(
       buildContextBundle({
         db: this.db,
         projectId: this.input.project.id,
         query: opts.query,
         limit: opts.limit ?? 12,
+        mode: opts.mode,
+        budgetChars: opts.budgetChars,
       }),
     )
   }

@@ -15,13 +15,13 @@ import {
   verifyArchiveFile,
 } from "../archive.ts"
 import { formatArtifactIngestSummary, ingestArtifacts } from "../artifacts.ts"
-import { buildContextBundle, formatContextBundle } from "../context.ts"
+import { buildContextBundle, formatContextBundle, type ContextMode } from "../context.ts"
 import { loadConfig, expandArchivePath } from "../config.ts"
 import { formatCurationSummary, runCuration } from "../curation.ts"
 import { buildDashboardReport, formatDashboardReport } from "../dashboard.ts"
 import { applyConnPragmas, openMemoryDb, sidecarPath } from "../db.ts"
 import { distillRoots, formatDistillSummary } from "../distill.ts"
-import { formatEvalReport, runEval } from "../eval.ts"
+import { formatContextEvalReport, formatEvalReport, runContextEval, runEval } from "../eval.ts"
 import { backfillHot, formatHotBackfillSummary, type BackfillStrategy } from "../hot-backfill.ts"
 import { formatEventReport, recentLogEvents, pruneLogEvents, trimLogEvents, type LogLevel } from "../logger.ts"
 import { runMaintenance } from "../maintenance.ts"
@@ -68,6 +68,36 @@ function levelArg(args: string[]): LogLevel | undefined {
   return undefined
 }
 
+function modeArg(args: string[]): ContextMode {
+  const raw = valueArg(args, "--mode")
+  if (
+    raw === "plan" ||
+    raw === "implement" ||
+    raw === "review" ||
+    raw === "debug" ||
+    raw === "audit" ||
+    raw === "handoff"
+  )
+    return raw
+  return "plan"
+}
+
+function gitSignals(worktree: string): { changedFiles: string[]; branch: string | null } {
+  const diff = Bun.spawnSync(["git", "diff", "--name-only"], {
+    cwd: worktree,
+    stdout: "pipe",
+    stderr: "ignore",
+  })
+  const branch = Bun.spawnSync(["git", "branch", "--show-current"], {
+    cwd: worktree,
+    stdout: "pipe",
+    stderr: "ignore",
+  })
+  const changedFiles = diff.exitCode === 0 ? new TextDecoder().decode(diff.stdout).split(/\r?\n/).filter(Boolean) : []
+  const branchName = branch.exitCode === 0 ? new TextDecoder().decode(branch.stdout).trim() || null : null
+  return { changedFiles, branch: branchName }
+}
+
 async function confirm(question: string): Promise<boolean> {
   const rl = readline.createInterface({ input, output })
   const a = (await rl.question(question)).trim().toLowerCase()
@@ -110,9 +140,10 @@ async function main() {
   engram backfill-hot [--apply] [--strategy priority|artifact-linked|recent|errors|patches] [--max-roots N] [--max-parts N] [--project-id ID] [--worktree DIR]
   engram distill [--apply] [--top N] [--project-id ID] [--worktree DIR]
   engram relations [--apply] [--max N] [--project-id ID] [--worktree DIR]
-  engram context <query> [--limit N] [--project-id ID] [--worktree DIR]
+  engram context <query> [--mode plan|implement|review|debug|audit|handoff] [--json] [--from-git] [--limit N] [--project-id ID] [--worktree DIR]
   engram eval run --fixture FILE [--out DIR] [--live] [--rerank] [--worktree DIR]
   engram eval query --fixture FILE --query-id ID [--live] [--rerank] [--worktree DIR]
+  engram eval context --fixture FILE [--out DIR] [--query-id ID] [--worktree DIR]
   engram curate [--apply] [--max N] [--project-id ID] [--worktree DIR]
   engram dashboard [--json] [--project-id ID] [--worktree DIR]
   engram maintain [--apply] [--prune-telemetry] [--verify-archives] [--export-stale] [--compact-db] [--health-report] [--project-id ID] [--worktree DIR]
@@ -250,22 +281,28 @@ async function main() {
   if (argv[0] === "context") {
     const pid = projectIdFromArgs(argv)
     const query = argv.filter(
-      (x, i) => !x.startsWith("--") && argv[i - 1] !== "--project-id" && argv[i - 1] !== "--worktree",
+      (x, i) =>
+        !x.startsWith("--") &&
+        argv[i - 1] !== "--project-id" &&
+        argv[i - 1] !== "--worktree" &&
+        argv[i - 1] !== "--limit" &&
+        argv[i - 1] !== "--mode" &&
+        argv[i - 1] !== "--budget",
     )[1]
     if (!pid || !query) {
       console.error("Usage: engram context <query> --project-id <uuid>")
       process.exit(1)
     }
-    console.log(
-      formatContextBundle(
-        buildContextBundle({
-          db: memoryDb,
-          projectId: pid,
-          query,
-          limit: numberArg(argv, "--limit", 12),
-        }),
-      ),
-    )
+    const bundle = buildContextBundle({
+      db: memoryDb,
+      projectId: pid,
+      query,
+      limit: numberArg(argv, "--limit", 12),
+      mode: modeArg(argv),
+      budgetChars: numberArg(argv, "--budget", 6000),
+      workspaceSignals: argv.includes("--from-git") ? gitSignals(wt) : undefined,
+    })
+    console.log(argv.includes("--json") ? JSON.stringify(bundle, null, 2) : formatContextBundle(bundle))
     memoryDb.close()
     return
   }
@@ -295,9 +332,24 @@ async function main() {
   }
 
   if (argv[0] === "eval") {
-    const fixture = valueArg(argv, "--fixture") ?? path.join(repoRoot, "eval", "fixtures", "core.json")
+    const isContextEval = argv[1] === "context"
+    const fixture =
+      valueArg(argv, "--fixture") ??
+      path.join(repoRoot, "eval", "fixtures", isContextEval ? "context-core.json" : "core.json")
     const outDir = valueArg(argv, "--out")
     const queryId = valueArg(argv, "--query-id")
+    if (isContextEval) {
+      const report = await runContextEval({
+        fixturePath: path.resolve(fixture),
+        cfg,
+        outDir: outDir ? path.resolve(outDir) : undefined,
+        memoryDb,
+        queryId,
+      })
+      console.log(formatContextEvalReport(report))
+      memoryDb.close()
+      return
+    }
     if (argv[1] === "query" && !queryId) {
       console.error("Usage: engram eval query --fixture FILE --query-id ID")
       process.exit(1)
