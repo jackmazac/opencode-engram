@@ -446,20 +446,9 @@ function safeSummary(raw: string): string {
 
 function expandTerms(query: string, signals: WorkspaceSignals | undefined): string[] {
   const terms = new Set(tokenize(query))
-  for (const term of [...terms]) for (const extra of expansionMap[term] ?? []) terms.add(extra)
   for (const file of signals?.changedFiles ?? []) for (const term of tokenize(file)) terms.add(term)
   if (signals?.branch) for (const term of tokenize(signals.branch)) terms.add(term)
   return [...terms].filter((x) => x.length > 1).slice(0, 32)
-}
-
-const expansionMap: Record<string, string[]> = {
-  brief: ["persistence", "auto", "update", "connector", "meeting"],
-  task: ["tasks", "background", "queue", "worker", "status", "agent"],
-  tasks: ["background", "queue", "worker", "status", "agent"],
-  workspace: ["tree", "node", "artifact", "folder", "scope"],
-  review: ["finding", "findings", "failed", "regression", "test"],
-  latency: ["network", "timeout", "streaming", "transport"],
-  auth: ["session", "token", "permission", "security"],
 }
 
 function tokenize(text: string): string[] {
