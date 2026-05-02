@@ -31,7 +31,7 @@ const querySchema = z.object({
 const fixtureSchema = z.object({
   name: z.string(),
   projectId: z.string().default("engram-eval"),
-  chunks: z.array(chunkSchema).min(1),
+  chunks: z.array(chunkSchema).default([]),
   queries: z.array(querySchema).min(1),
 })
 
@@ -53,7 +53,7 @@ const contextQuerySchema = z.object({
 const contextFixtureSchema = z.object({
   name: z.string(),
   projectId: z.string().default("engram-context-eval"),
-  chunks: z.array(contextChunkSchema).min(1),
+  chunks: z.array(contextChunkSchema).default([]),
   queries: z.array(contextQuerySchema).min(1),
 })
 
@@ -124,6 +124,7 @@ export type RunEvalOpts = {
   queryId?: string
   live?: boolean
   rerank?: boolean
+  useSidecar?: boolean
 }
 
 export type RunContextEvalOpts = {
@@ -132,6 +133,7 @@ export type RunContextEvalOpts = {
   outDir?: string
   memoryDb?: Database
   queryId?: string
+  useSidecar?: boolean
 }
 
 export async function runEval(opts: RunEvalOpts): Promise<EvalReport> {
@@ -142,13 +144,17 @@ export async function runEval(opts: RunEvalOpts): Promise<EvalReport> {
   const selectedQueries = opts.queryId ? fixture.queries.filter((q) => q.id === opts.queryId) : fixture.queries
   if (selectedQueries.length === 0) throw new Error(`No query ${opts.queryId} in ${opts.fixturePath}`)
 
+  if (!opts.useSidecar && fixture.chunks.length === 0)
+    throw new Error("Eval fixture needs chunks unless --sidecar is used")
+  if (opts.useSidecar && !opts.memoryDb) throw new Error("Sidecar eval requires memoryDb")
+  const sidecarDb = opts.useSidecar ? opts.memoryDb : undefined
   const dir = path.join(os.tmpdir(), `engram-eval-${Date.now()}`)
-  mkdirSync(dir, { recursive: true })
-  const db = openMemoryDb(path.join(dir, "memory.db"))
+  if (!opts.useSidecar) mkdirSync(dir, { recursive: true })
+  const db = sidecarDb ?? openMemoryDb(path.join(dir, "memory.db"))
   try {
     const evalCfg = { ...cfg, rerank: { ...cfg.rerank, enabled: opts.rerank === true } }
     const key = opts.live === true ? resolveApiKey(cfg.openaiApiKey) : undefined
-    await seedEvalDb(db, evalCfg, fixture, key)
+    if (!opts.useSidecar) await seedEvalDb(db, evalCfg, fixture, key)
 
     const results: EvalQueryResult[] = []
     for (const q of selectedQueries) {
@@ -174,7 +180,7 @@ export async function runEval(opts: RunEvalOpts): Promise<EvalReport> {
     if (opts.outDir) writeReport(opts.outDir, report)
     return report
   } finally {
-    db.close()
+    if (!opts.useSidecar) db.close()
   }
 }
 
@@ -199,11 +205,15 @@ export async function runContextEval(opts: RunContextEvalOpts): Promise<ContextE
   const queries = opts.queryId ? fixture.queries.filter((q) => q.id === opts.queryId) : fixture.queries
   if (queries.length === 0) throw new Error(`No query ${opts.queryId} in ${opts.fixturePath}`)
 
+  if (!opts.useSidecar && fixture.chunks.length === 0)
+    throw new Error("Context eval fixture needs chunks unless --sidecar is used")
+  if (opts.useSidecar && !opts.memoryDb) throw new Error("Sidecar context eval requires memoryDb")
+  const sidecarDb = opts.useSidecar ? opts.memoryDb : undefined
   const dir = path.join(os.tmpdir(), `engram-context-eval-${Date.now()}`)
-  mkdirSync(dir, { recursive: true })
-  const db = openMemoryDb(path.join(dir, "memory.db"))
+  if (!opts.useSidecar) mkdirSync(dir, { recursive: true })
+  const db = sidecarDb ?? openMemoryDb(path.join(dir, "memory.db"))
   try {
-    seedContextEvalDb(db, cfg, fixture)
+    if (!opts.useSidecar) seedContextEvalDb(db, cfg, fixture)
     const results: ContextEvalQueryResult[] = []
     for (const q of queries) {
       const start = performance.now()
@@ -221,7 +231,7 @@ export async function runContextEval(opts: RunContextEvalOpts): Promise<ContextE
     if (opts.outDir) writeContextReport(opts.outDir, report)
     return report
   } finally {
-    db.close()
+    if (!opts.useSidecar) db.close()
   }
 }
 

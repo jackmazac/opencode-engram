@@ -14,6 +14,13 @@ Exports:
 
 Operational logs are intentionally stored in the sidecar as bounded `log_event` rows. Use `engram telemetry --events` or `engram dashboard --json` rather than depending on the table shape from companion packages.
 
+Eval fixtures support two modes:
+
+- Synthetic fixtures seed their own chunks and run without `--sidecar`.
+- Live fixtures run with `--sidecar` and assert IDs already present in a project's `memory.db`.
+
+Prefer sidecar-backed context evals for package confidence on real projects, and keep private project-specific fixtures under that project's `.opencode/engram-eval/` directory rather than publishing them with the package.
+
 ## Conductor
 
 Local scaffold: `/Users/jack.mazac/Developer/opencode-conductor`.

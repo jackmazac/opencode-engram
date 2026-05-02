@@ -141,9 +141,9 @@ async function main() {
   engram distill [--apply] [--top N] [--project-id ID] [--worktree DIR]
   engram relations [--apply] [--max N] [--project-id ID] [--worktree DIR]
   engram context <query> [--mode plan|implement|review|debug|audit|handoff] [--json] [--from-git] [--limit N] [--project-id ID] [--worktree DIR]
-  engram eval run --fixture FILE [--out DIR] [--live] [--rerank] [--worktree DIR]
-  engram eval query --fixture FILE --query-id ID [--live] [--rerank] [--worktree DIR]
-  engram eval context --fixture FILE [--out DIR] [--query-id ID] [--worktree DIR]
+  engram eval run --fixture FILE [--out DIR] [--live] [--rerank] [--sidecar] [--worktree DIR]
+  engram eval query --fixture FILE --query-id ID [--live] [--rerank] [--sidecar] [--worktree DIR]
+  engram eval context --fixture FILE [--out DIR] [--query-id ID] [--sidecar] [--worktree DIR]
   engram curate [--apply] [--max N] [--project-id ID] [--worktree DIR]
   engram dashboard [--json] [--project-id ID] [--worktree DIR]
   engram maintain [--apply] [--prune-telemetry] [--verify-archives] [--export-stale] [--compact-db] [--health-report] [--project-id ID] [--worktree DIR]
@@ -345,6 +345,7 @@ async function main() {
         outDir: outDir ? path.resolve(outDir) : undefined,
         memoryDb,
         queryId,
+        useSidecar: argv.includes("--sidecar"),
       })
       console.log(formatContextEvalReport(report))
       memoryDb.close()
@@ -362,6 +363,7 @@ async function main() {
       queryId: argv[1] === "query" ? queryId : undefined,
       live: argv.includes("--live"),
       rerank: argv.includes("--rerank"),
+      useSidecar: argv.includes("--sidecar"),
     })
     console.log(formatEvalReport(report))
     memoryDb.close()

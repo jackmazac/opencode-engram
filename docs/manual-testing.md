@@ -18,6 +18,20 @@ bun run ./src/cli/run.ts eval run --fixture eval/fixtures/core.json --out /tmp/e
 
 Expected current baseline for `core`: recall@3 100%, hit@3 100%, MRR 1.
 
+## Context Eval
+
+Synthetic fixture:
+
+```bash
+bun run ./src/cli/run.ts eval context --fixture eval/fixtures/context-core.json --out /tmp/engram-context-core --worktree .
+```
+
+Sidecar-backed fixtures use the project `memory.db` directly and must reference IDs that already exist in that sidecar:
+
+```bash
+bun run ./src/cli/run.ts eval context --sidecar --fixture /path/to/project/.opencode/engram-eval/context-live.json --worktree /path/to/project
+```
+
 ## Dashboard And Maintenance
 
 ```bash
@@ -65,8 +79,12 @@ WT=/Users/jack.mazac/Developer/execintel
 bun run ./src/cli/run.ts dashboard --project-id "$PROJECT" --worktree "$WT"
 bun run ./src/cli/run.ts telemetry --events --level warn --project-id "$PROJECT" --worktree "$WT"
 bun run ./src/cli/run.ts context "brief persistence auto update background tasks workspace" --limit 12 --project-id "$PROJECT" --worktree "$WT"
+bun run ./src/cli/run.ts context "brief persistence auto update connector" --mode plan --json --project-id "$PROJECT" --worktree "$WT"
+bun run ./src/cli/run.ts eval context --sidecar --fixture "$WT/.opencode/engram-eval/motif-context-live.json" --worktree "$WT"
 bun run ./src/cli/run.ts maintain --project-id "$PROJECT" --worktree "$WT"
 ```
+
+Keep synthetic retrieval fixtures separate from sidecar fixtures. A fixture that seeds chunks by ID should run without `--sidecar`; a fixture that uses live memory should include no chunks and should assert current sidecar IDs.
 
 ## Archive Safety
 

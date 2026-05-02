@@ -78,6 +78,8 @@ bun run ./src/cli/run.ts distill [--apply] [--top 20] --project-id <uuid> --work
 bun run ./src/cli/run.ts relations [--apply] --project-id <uuid> --worktree /path/to/project
 bun run ./src/cli/run.ts context "query" --project-id <uuid> --worktree /path/to/project
 bun run ./src/cli/run.ts eval run --fixture eval/fixtures/core.json --worktree /path/to/project
+     # add --sidecar when fixture expected IDs already exist in the project's memory.db
+     # context bundles: bun run ./src/cli/run.ts eval context --sidecar --fixture /path/to/context-fixture.json --worktree /path/to/project
 bun run ./src/cli/run.ts dashboard [--json] --project-id <uuid> --worktree /path/to/project
 bun run ./src/cli/run.ts maintain [--apply] [--health-report] --project-id <uuid> --worktree /path/to/project
 bun run ./src/cli/run.ts curate [--apply] --project-id <uuid> --worktree /path/to/project
@@ -119,7 +121,8 @@ Tests include an **optional live** suite (`test/openai-live-nano.test.ts`) when 
 ## Eval and manual testing
 
 - Checked-in retrieval fixtures live in [`eval/fixtures`](eval/fixtures).
-- `engram eval run` reports recall@K, hit@K, MRR, p50, and p95 latency.
+- `engram eval run` reports recall@K, hit@K, MRR, p50, and p95 latency. By default fixtures are synthetic and seed their own chunks; `--sidecar` evaluates against an existing project sidecar and fixture expected IDs must already exist in that `memory.db`.
+- `engram eval context` reports section hit, recall@budget, stale/noise rates, and latency for compiled context bundles.
 - `engram telemetry --events` reports bounded lifecycle/failure events; `maintain --prune-telemetry --apply` prunes both metrics and events.
 - `engram ingest-artifacts` should run before broad hot DB backfills; plans, audits, journals, and progress files are higher signal than raw tool output.
 - `engram context` is the CLI/TUI-friendly Orchestrator bridge: it returns a bounded preflight bundle without requiring the custom Orchestrator plugin.

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { mkdirSync, rmSync } from "node:fs"
+import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { formatContextEvalReport, formatEvalReport, runContextEval, runEval } from "../src/eval.ts"
@@ -47,6 +47,71 @@ describe("memory eval", () => {
     expect(row?.fixture_name).toBe("context-core")
     expect(row?.recall_at_k).toBe(report.sectionHitRate)
     expect(row?.mrr).toBe(report.recallAtBudget)
+
+    db.close()
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  test("runs context eval against an existing sidecar", async () => {
+    const dir = path.join(os.tmpdir(), `engram-context-sidecar-${Date.now()}`)
+    mkdirSync(dir, { recursive: true })
+    const db = openMemoryDb(path.join(dir, "memory.db"))
+    db.prepare(
+      `INSERT INTO chunk (
+        id, session_id, message_id, part_id, project_id, role, agent, model, content_type, content,
+        file_paths, tool_name, tool_status, output_head, output_tail, output_length, error_class,
+        time_created, content_hash, root_session_id, session_depth, plan_slug, source_kind, source_ref, authority, superseded_by
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ).run(
+      "sidecar-contract",
+      "s1",
+      "m1",
+      "p1",
+      "sidecar-project",
+      "assistant",
+      "eval",
+      null,
+      "api_contract",
+      "Sidecar context eval should use existing memory chunks without seeding synthetic fixtures.",
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      Date.now(),
+      "hash-sidecar-contract",
+      "root1",
+      0,
+      null,
+      "journal",
+      "fixture:sidecar-contract",
+      10,
+      null,
+    )
+    const fixturePath = path.join(dir, "sidecar-context.json")
+    writeFileSync(
+      fixturePath,
+      JSON.stringify({
+        name: "sidecar-context",
+        projectId: "sidecar-project",
+        queries: [
+          {
+            id: "q-sidecar",
+            query: "existing memory chunks synthetic fixtures",
+            mode: "implement",
+            expectedSections: { must_know: ["sidecar-contract"] },
+            forbidden: [],
+            limit: 5,
+          },
+        ],
+      }),
+    )
+
+    const report = await runContextEval({ fixturePath, memoryDb: db, useSidecar: true })
+    expect(report.sectionHitRate).toBe(1)
+    expect(report.recallAtBudget).toBe(1)
 
     db.close()
     rmSync(dir, { recursive: true, force: true })
