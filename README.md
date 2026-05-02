@@ -52,6 +52,12 @@ With **`hints.orchestrator`** `true` (default), Engram appends a short **`<!-- E
 | `forget`          | Drop chunks matching a pattern / scope (see config limits).           |
 | `stats`           | Sidecar stats, telemetry summaries, and embedding health.             |
 
+## Agent Skill
+
+Engram ships an optional OpenCode skill at [`skills/engram-memory/SKILL.md`](skills/engram-memory/SKILL.md). Install it into `.opencode/skills/engram-memory/SKILL.md` for a project or `~/.config/opencode/skills/engram-memory/SKILL.md` globally to teach agents when to use `memory_context`, `memory`, `memory_feedback`, and `stats`.
+
+The skill is intentionally lightweight: it teaches mode selection (`plan`, `implement`, `review`, `debug`, `audit`, `handoff`), how to read context bundle sections and `why:` explanations, when to give feedback, and how to check memory health.
+
 ## CLI (`engram`)
 
 From a clone of this repo:
